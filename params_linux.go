@@ -1,5 +1,3 @@
-// +build linux
-
 package water
 
 type DevicePermissions struct {
@@ -14,10 +12,7 @@ type DevicePermissions struct {
 	Group uint
 }
 
-// PlatformSpecificParams defines parameters in Config that are specific to
-// Linux. A zero-value of such type is valid, yielding an interface
-// with OS defined name.
-type PlatformSpecificParams struct {
+type Config struct {
 	// Name is the name to be set for the interface to be created. This overrides
 	// the default name assigned by OS such as tap0 or tun0. A zero-value of this
 	// field, i.e. an empty string, indicates that the default name should be
@@ -36,8 +31,4 @@ type PlatformSpecificParams struct {
 	// From version 3.8, Linux supports multiqueue tuntap which can uses multiple
 	// file descriptors (queues) to parallelize packets sending or receiving.
 	MultiQueue bool
-}
-
-func defaultPlatformSpecificParams() PlatformSpecificParams {
-	return PlatformSpecificParams{}
 }

@@ -1,16 +1,12 @@
-// +build darwin
-
 package water
 
 import (
-	"errors"
-	"fmt"
-	"io"
-	"os"
-	"sync"
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
+
+type Config struct{}
 
 const appleUTUNCtl = "com.apple.net.utun_control"
 
@@ -61,8 +57,7 @@ type sockaddrCtl struct {
 
 var sockaddrCtlSize uintptr = 32
 
-func newTUN(config Config) (ifce *Interface, err error) {
-	var fd int
+func New(Config) (ifce *Interface, err error) {
 	// Supposed to be socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL), but ...
 	//
 	// In sys/socket.h:
@@ -70,8 +65,9 @@ func newTUN(config Config) (ifce *Interface, err error) {
 	//
 	// In sys/sys_domain.h:
 	// #define SYSPROTO_CONTROL       	2	/* kernel control protocol */
-	if fd, err = syscall.Socket(syscall.AF_SYSTEM, syscall.SOCK_DGRAM, 2); err != nil {
-		return nil, fmt.Errorf("error in syscall.Socket: %v", err)
+	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, 2)
+	if err != nil {
+		return nil, err
 	}
 
 	var ctlInfo = &struct {
@@ -80,14 +76,14 @@ func newTUN(config Config) (ifce *Interface, err error) {
 	}{}
 	copy(ctlInfo.ctlName[:], []byte(appleUTUNCtl))
 
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(appleCTLIOCGINFO), uintptr(unsafe.Pointer(ctlInfo))); errno != 0 {
-		err = errno
-		return nil, fmt.Errorf("error in syscall.Syscall(syscall.SYS_IOTL, ...): %v", err)
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(appleCTLIOCGINFO), uintptr(unsafe.Pointer(ctlInfo)))
+	if errno != 0 {
+		return nil, errno
 	}
 
 	addrP := unsafe.Pointer(&sockaddrCtl{
 		scLen:    uint8(sockaddrCtlSize),
-		scFamily: syscall.AF_SYSTEM,
+		scFamily: unix.AF_SYSTEM,
 
 		/* #define AF_SYS_CONTROL 2 */
 		ssSysaddr: 2,
@@ -95,101 +91,58 @@ func newTUN(config Config) (ifce *Interface, err error) {
 		scID:   ctlInfo.ctlID,
 		scUnit: 0,
 	})
-	if _, _, errno := syscall.RawSyscall(syscall.SYS_CONNECT, uintptr(fd), uintptr(addrP), uintptr(sockaddrCtlSize)); errno != 0 {
-		err = errno
-		return nil, fmt.Errorf("error in syscall.RawSyscall(syscall.SYS_CONNECT, ...): %v", err)
+	_, _, errno = unix.Syscall(unix.SYS_CONNECT, uintptr(fd), uintptr(addrP), uintptr(sockaddrCtlSize))
+	if errno != 0 {
+		return nil, errno
 	}
 
-	var ifName struct {
-		name [16]byte
-	}
+	var ifName [16]byte
 	ifNameSize := uintptr(16)
-	if _, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, uintptr(fd),
+	_, _, errno = unix.Syscall6(unix.SYS_GETSOCKOPT, uintptr(fd),
 		2, /* #define SYSPROTO_CONTROL 2 */
 		2, /* #define UTUN_OPT_IFNAME 2 */
 		uintptr(unsafe.Pointer(&ifName)),
-		uintptr(unsafe.Pointer(&ifNameSize)), 0); errno != 0 {
-		err = errno
-		return nil, fmt.Errorf("error in syscall.Syscall6(syscall.SYS_GETSOCKOPT, ...): %v", err)
+		uintptr(unsafe.Pointer(&ifNameSize)), 0)
+	if errno != 0 {
+		return nil, errno
 	}
 
+	name := string(ifName[:ifNameSize-1])
 	return &Interface{
-		isTAP: false,
-		name:  string(ifName.name[:ifNameSize-1 /* -1 is for \0 */]),
-		ReadWriteCloser: &tunReadCloser{
-			f: os.NewFile(uintptr(fd), string(ifName.name[:])),
-		},
+		File: file(uintptr(fd), name),
+		name: name,
 	}, nil
 }
 
-func newTAP(config Config) (ifce *Interface, err error) {
-	return nil, errors.New("tap interface not implemented on this platform")
+// this is a hack to work around the first 4 bytes "packet information"
+// because there doesn't seem to be an IFF_NO_PI for darwin.
+func (ifce *Interface) Read(buffer []byte) (int, error) {
+	n, err := ifce.File.Read(buffer)
+	if err != nil {
+		return 0, err
+	}
+	copy(buffer, buffer[4:])
+	return n - 4, nil
 }
 
-// tunReadCloser is a hack to work around the first 4 bytes "packet
-// information" because there doesn't seem to be an IFF_NO_PI for darwin.
-type tunReadCloser struct {
-	f io.ReadWriteCloser
-
-	rMu  sync.Mutex
-	rBuf []byte
-
-	wMu  sync.Mutex
-	wBuf []byte
-}
-
-var _ io.ReadWriteCloser = (*tunReadCloser)(nil)
-
-func (t *tunReadCloser) Read(to []byte) (int, error) {
-	t.rMu.Lock()
-	defer t.rMu.Unlock()
-
-	if cap(t.rBuf) < len(to)+4 {
-		t.rBuf = make([]byte, len(to)+4)
-	}
-	t.rBuf = t.rBuf[:len(to)+4]
-
-	n, err := t.f.Read(t.rBuf)
-	copy(to, t.rBuf[4:])
-	return n - 4, err
-}
-
-func (t *tunReadCloser) Write(from []byte) (int, error) {
-
-	if len(from) == 0 {
-		return 0, syscall.EIO
-	}
-
-	t.wMu.Lock()
-	defer t.wMu.Unlock()
-
-	if cap(t.wBuf) < len(from)+4 {
-		t.wBuf = make([]byte, len(from)+4)
-	}
-	t.wBuf = t.wBuf[:len(from)+4]
-
+func (ifce *Interface) Write(buffer []byte) (int, error) {
 	// Determine the IP Family for the NULL L2 Header
-	ipVer := from[0] >> 4
-	if ipVer == 4 {
-		t.wBuf[3] = syscall.AF_INET
-	} else if ipVer == 6 {
-		t.wBuf[3] = syscall.AF_INET6
-	} else {
-		return 0, errors.New("Unable to determine IP version from packet.")
+	buffer = buffer[:len(buffer)+4]
+	copy(buffer[4:], buffer)
+	ipVer := buffer[0] >> 4
+	switch ipVer {
+	case 4:
+		buffer[3] = unix.AF_INET
+	case 6:
+		buffer[3] = unix.AF_INET6
+	default:
+		panic("unable to determine IP version from packet")
 	}
 
-	copy(t.wBuf[4:], from)
+	buffer[0] = 0
+	buffer[1] = 0
+	buffer[2] = 0
 
-	n, err := t.f.Write(t.wBuf)
+	n, err := ifce.File.Write(buffer)
 	return n - 4, err
-}
-
-func (t *tunReadCloser) Close() error {
-	// lock to make sure no read/write is in process.
-	t.rMu.Lock()
-	defer t.rMu.Unlock()
-	t.wMu.Lock()
-	defer t.wMu.Unlock()
-
-	return t.f.Close()
 }
