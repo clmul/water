@@ -28,8 +28,37 @@ func ioctl(fd int, request uintptr, argp uintptr) error {
 	return nil
 }
 
+const (
+	devfile = "/dev/net/tun"
+)
+
+func createDevNetTun() error {
+	err := unix.Mkdir("/dev/net", 0755)
+	if err != nil {
+		return err
+	}
+	dev := unix.Mkdev(10, 200)
+	err = unix.Mknod(devfile, unix.S_IFCHR|0666, int(dev))
+	return err
+}
+
+func openDevNetTun() (int, error){
+	fd, err := unix.Open(devfile, unix.O_RDWR, 0)
+	if err == nil {
+		return fd, nil
+	}
+	if err != unix.ENOENT {
+		return 0, err
+	}
+	err = createDevNetTun()
+	if err != nil {
+		return 0, err
+	}
+	return unix.Open(devfile, unix.O_RDWR, 0)
+}
+
 func New(config Config) (ifce *Interface, err error) {
-	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR, 0)
+	fd, err := openDevNetTun()
 	if err != nil {
 		return nil, err
 	}
