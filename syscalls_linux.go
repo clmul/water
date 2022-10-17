@@ -42,7 +42,7 @@ func createDevNetTun() error {
 	return err
 }
 
-func openDevNetTun() (int, error){
+func openDevNetTun() (int, error) {
 	fd, err := unix.Open(devfile, unix.O_RDWR, 0)
 	if err == nil {
 		return fd, nil
@@ -57,10 +57,10 @@ func openDevNetTun() (int, error){
 	return unix.Open(devfile, unix.O_RDWR, 0)
 }
 
-func New(config Config) (ifce *Interface, err error) {
+func open(config Config) (int, string, error) {
 	fd, err := openDevNetTun()
 	if err != nil {
-		return nil, err
+		return 0, "", err
 	}
 
 	var flags uint16
@@ -70,18 +70,14 @@ func New(config Config) (ifce *Interface, err error) {
 	}
 	name, err := createInterface(fd, config.Name, flags)
 	if err != nil {
-		return nil, err
+		return 0, "", err
 	}
 
 	if err = setDeviceOptions(fd, config); err != nil {
-		return nil, err
+		return 0, "", err
 	}
 
-	ifce = &Interface{
-		File: file(uintptr(fd), name),
-		name: name,
-	}
-	return
+	return fd, name, err
 }
 
 func createInterface(fd int, ifName string, flags uint16) (createdIFName string, err error) {

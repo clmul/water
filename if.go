@@ -1,4 +1,4 @@
-// +build darwin linux
+//go:build darwin || linux
 
 package water
 
@@ -14,6 +14,7 @@ import (
 // Kernel document about MultiQueue: https://www.kernel.org/doc/Documentation/networking/tuntap.txt
 type Interface struct {
 	*os.File
+	fd   int
 	name string
 }
 
@@ -22,9 +23,25 @@ func (ifce *Interface) Name() string {
 	return ifce.name
 }
 
+func (ifce *Interface) Fd() int {
+	return ifce.fd
+}
+
 //go:linkname newFile os.newFile
 func newFile(fd uintptr, name string, kind int) *os.File
 
 func file(fd uintptr, name string) *os.File {
 	return newFile(fd, name, 1)
+}
+
+func New(c Config) (*Interface, error) {
+	fd, name, err := open(c)
+	if err != nil {
+		return nil, err
+	}
+	ifce := &Interface{
+		File: file(uintptr(fd), name),
+		name: name,
+	}
+	return ifce, nil
 }

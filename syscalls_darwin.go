@@ -57,7 +57,7 @@ type sockaddrCtl struct {
 
 var sockaddrCtlSize uintptr = 32
 
-func New(Config) (ifce *Interface, err error) {
+func open(Config) (int, string, error) {
 	// Supposed to be socket(PF_SYSTEM, SOCK_DGRAM, SYSPROTO_CONTROL), but ...
 	//
 	// In sys/socket.h:
@@ -67,7 +67,7 @@ func New(Config) (ifce *Interface, err error) {
 	// #define SYSPROTO_CONTROL       	2	/* kernel control protocol */
 	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, 2)
 	if err != nil {
-		return nil, err
+		return 0, "", err
 	}
 
 	var ctlInfo = &struct {
@@ -78,7 +78,7 @@ func New(Config) (ifce *Interface, err error) {
 
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(appleCTLIOCGINFO), uintptr(unsafe.Pointer(ctlInfo)))
 	if errno != 0 {
-		return nil, errno
+		return 0, "", errno
 	}
 
 	addrP := unsafe.Pointer(&sockaddrCtl{
@@ -93,7 +93,7 @@ func New(Config) (ifce *Interface, err error) {
 	})
 	_, _, errno = unix.Syscall(unix.SYS_CONNECT, uintptr(fd), uintptr(addrP), uintptr(sockaddrCtlSize))
 	if errno != 0 {
-		return nil, errno
+		return 0, "", errno
 	}
 
 	var ifName [16]byte
@@ -104,14 +104,11 @@ func New(Config) (ifce *Interface, err error) {
 		uintptr(unsafe.Pointer(&ifName)),
 		uintptr(unsafe.Pointer(&ifNameSize)), 0)
 	if errno != 0 {
-		return nil, errno
+		return 0, "", errno
 	}
 
 	name := string(ifName[:ifNameSize-1])
-	return &Interface{
-		File: file(uintptr(fd), name),
-		name: name,
-	}, nil
+	return fd, name, nil
 }
 
 // this is a hack to work around the first 4 bytes "packet information"
