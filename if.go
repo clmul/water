@@ -1,8 +1,11 @@
 //go:build darwin || linux
+// +build darwin linux
 
 package water
 
 import (
+	"golang.org/x/sys/unix"
+	"log"
 	"os"
 	_ "unsafe"
 )
@@ -27,11 +30,12 @@ func (ifce *Interface) Fd() int {
 	return ifce.fd
 }
 
-//go:linkname newFile os.newFile
-func newFile(fd uintptr, name string, kind int) *os.File
-
 func file(fd uintptr, name string) *os.File {
-	return newFile(fd, name, 1)
+	err := unix.SetNonblock(int(fd), true)
+	if err != nil {
+		log.Println(err)
+	}
+	return os.NewFile(fd, name)
 }
 
 func New(c Config) (*Interface, error) {
